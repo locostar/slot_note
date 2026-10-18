@@ -656,8 +656,76 @@ function promoDatesIn(text) {
     return [...new Set(dates)];
 }
 
+function classifyPromoFactSheet(lines) {
+    const markers = [
+        { label: '이벤트명', heading: /(?:캠페인|김페인|campaign).{0,24}(?:이벤트|event).{0,12}(?:제목|title)/i },
+        { label: '목적', heading: /(?:캠페인|김페인|campaign).{0,24}(?:이벤트|event).{0,12}(?:목적|purpose)/i },
+        { label: '대상', heading: /(?:캠페인|김페인|campaign).{0,24}(?:이벤트|event).{0,24}(?:대상|세그먼트|티어|target|segment|tier)/i },
+        { label: '장소', heading: /(?:캠페인|김페인|campaign).{0,24}(?:이벤트|event).{0,12}(?:장소|위치|location|venue)/i },
+        { label: '시행기간', heading: /(?:캠페인|김페인|campaign).{0,24}(?:이벤트|event).{0,24}(?:시행기간|진행기간|운영기간|기간|schedule|period)/i }
+    ];
+    const isFactHeading = line => markers.some(marker => marker.heading.test(line)) || /(?:캠페인|김페인|campaign).{0,24}(?:이벤트|event).{0,24}관련\s*세부\s*사항/i.test(line);
+    const valueAfter = marker => {
+        const index = lines.findIndex(line => marker.heading.test(line));
+        if (index < 0) return '';
+        const headingMatch = lines[index].match(marker.heading);
+        const inlineValue = headingMatch
+            ? lines[index].slice(headingMatch.index + headingMatch[0].length).replace(/^[\s:：&()[\]-]+/, '').trim()
+            : '';
+        if (inlineValue) return inlineValue;
+        for (let next = index + 1; next < lines.length; next++) {
+            if (isFactHeading(lines[next])) break;
+            if (/^(?:fact\s*sheet|문서\s*기록|버전\s*\d+)/i.test(lines[next])) continue;
+            return lines[next].replace(/^[-•*\s]+/, '').trim();
+        }
+        return '';
+    };
+
+    if (!markers.some(marker => marker.heading.test(lines.join(' ')))) return null;
+
+    const values = Object.fromEntries(markers.map(marker => [marker.label, valueAfter(marker)]));
+    const eventDates = promoDatesIn(values['시행기간']);
+    const details = [];
+    for (const label of ['목적', '대상', '장소']) {
+        if (values[label]) details.push({ label, value: values[label] });
+    }
+    if (values['시행기간']) details.push({ label: '시행기간', value: values['시행기간'] });
+
+    const detailStart = lines.findIndex(line => /(?:캠페인|김페인|campaign).{0,24}(?:이벤트|event).{0,24}관련\s*세부\s*사항/i.test(line));
+    if (detailStart >= 0) {
+        const detailLines = lines.slice(detailStart + 1);
+        const pointPeriod = lines.find(line => /(?:엑티비티|액티비티|activity\s*points?|포인트).*(?:적립|earn|accrual).*(?:기간|period)/i.test(line));
+        if (pointPeriod) details.push({ label: '포인트 적립 기간', value: pointPeriod.replace(/^[-•*\s]+/, '') });
+
+        const drawDetails = detailLines.filter(line => /추첨|주권|티켓|manual\s*draw|draw\s*(?:date|time)/i.test(line));
+        if (drawDetails.length) details.push({ label: '응모·추첨', value: drawDetails.map(line => line.replace(/^[-•*\s]+/, '')).join('\n') });
+
+        const confirmation = detailLines.find(line => /상금\s*확정|prize\s*confirmation|payout\s*(?:confirmation|time)/i.test(line));
+        if (confirmation) details.push({ label: '상금 확정', value: confirmation.replace(/^[-•*\s]+/, '') });
+
+        const krwHeader = detailLines.findIndex(line => /^\s*KRW\s*$/i.test(line));
+        const prizeStart = krwHeader >= 0 ? krwHeader : detailLines.findIndex(line => /(?:cash\s*mountain.*(?:상품|prize)|상품\s*(?:내역|목록|상금))/i.test(line));
+        if (prizeStart >= 0) {
+            const prizeLines = detailLines.slice(prizeStart).filter(line => /현금|상금|상품|가방|cash|prize|KRW|누적|억|만원|원|^\d+\s*(?:등|st|nd|rd|th)/i.test(line) && !/^\*/.test(line));
+            if (prizeLines.length) details.push({ label: '상품·상금', value: prizeLines.map(line => line.replace(/^[-•*\s]+/, '')).join('\n') });
+        }
+
+        const notes = detailLines.filter(line => /^\*/.test(line));
+        if (notes.length) details.push({ label: '유의사항', value: notes.map(line => line.replace(/^\*\s*/, '')).join('\n') });
+    }
+
+    return {
+        name: values['이벤트명'],
+        endDate: eventDates.at(-1) || '',
+        details,
+        description: details.map(detail => `${detail.label}: ${detail.value}`).join('\n\n')
+    };
+}
+
 function classifyPromoPdfText(text) {
     const lines = text.split(/\r?\n/).map(line => line.replace(/\s+/g, ' ').trim()).filter(Boolean);
+    const factSheetResult = classifyPromoFactSheet(lines);
+    if (factSheetResult) return factSheetResult;
     const nameHeading = /(?:이벤트|행사|프로모션)\s*(?:명|제목|타이틀)|(?:event|promotion|campaign)\s*(?:name|title)/i;
     const isHeading = line => promoPdfSections.some(section => section.heading.test(line)) || nameHeading.test(line);
     const getSectionText = section => {
