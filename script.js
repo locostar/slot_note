@@ -633,148 +633,53 @@ function setPromoFilter(status, btn) {
 
 function searchPromo() { renderPromo(); }
 
-const promoPdfSections = [
-    { label: '기간', heading: /^(?:(?:이벤트|행사|프로모션)\s*)?(?:(?:진행|운영)\s*)?(?:기간|일정)(?=\s|[:：-]|$)|^(?:event\s*dates?|promotion\s*period|campaign\s*period|validity)\b/i, strip: /^(?:(?:이벤트|행사|프로모션)\s*)?(?:진행|운영)?\s*(?:기간|일정)\s*[:：-]?\s*|^(?:event\s*dates?|promotion\s*period|campaign\s*period|validity)\s*[:：-]?\s*/i },
-    { label: '대상', heading: /^(?:(?:참여|적용)\s*)?대상(?:자|고객|회원)?(?=\s|[:：-]|$)|^(?:eligible\s*(?:customers|members|participants)|target\s*audience)\b/i, strip: /^(?:(?:참여|적용)\s*)?대상(?:자|고객|회원)?\s*[:：-]?\s*|^(?:eligible\s*(?:customers|members|participants)|target\s*audience)\s*[:：-]?\s*/i },
-    { label: '혜택', heading: /^(?:혜택|보상|리워드|경품|할인|증정)(?=\s|[:：-]|$)|^(?:benefits?|rewards?|prizes?|offers?|bonuses|discounts?)\b/i, strip: /^(?:혜택|보상|리워드|경품|할인|증정|benefits?|rewards?|prizes?|offers?|bonuses|discounts?)\s*[:：-]?\s*/i },
-    { label: '참여 방법', heading: /^(?:참여\s*(?:방법|조건|절차)|응모\s*방법|신청\s*방법|이용\s*방법)(?=\s|[:：-]|$)|^(?:how\s*to\s*(?:participate|enter|redeem)|participation\s*(?:method|steps)|entry\s*method)\b/i, strip: /^(?:(?:참여|응모|신청|이용)\s*)?(?:방법|조건|절차)\s*[:：-]?\s*|^(?:how\s*to\s*(?:participate|enter|redeem)|participation\s*(?:method|steps)|entry\s*method)\s*[:：-]?\s*/i },
-    { label: '유의사항', heading: /^(?:유의사항|주의사항|제외\s*대상|제한\s*사항)(?=\s|[:：-]|$)|^(?:terms\s*(?:and\s*)?conditions|conditions|restrictions|exclusions)\b/i, strip: /^(?:유의사항|주의사항|제외\s*대상|제한\s*사항|terms\s*(?:and\s*)?conditions|conditions|restrictions|exclusions)\s*[:：-]?\s*/i }
-];
-
-function promoDatesIn(text) {
-    const dates = [];
-    const pattern = /(\d{4})\s*(?:[./]|-|년)\s*(\d{1,2})\s*(?:[./]|-|월)\s*(\d{1,2})\s*일?/g;
-    for (const match of text.matchAll(pattern)) {
-        const year = Number(match[1]);
-        const month = Number(match[2]);
-        const day = Number(match[3]);
-        const date = new Date(Date.UTC(year, month - 1, day));
-        if (date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day) {
-            dates.push(`${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
-        }
-    }
-    return [...new Set(dates)];
-}
-
-function classifyPromoFactSheet(lines) {
-    const markers = [
-        { label: '이벤트명', heading: /(?:캠페인|김페인|campaign).{0,24}(?:이벤트|event).{0,12}(?:제목|title)/i },
-        { label: '목적', heading: /(?:캠페인|김페인|campaign).{0,24}(?:이벤트|event).{0,12}(?:목적|purpose)/i },
-        { label: '대상', heading: /(?:캠페인|김페인|campaign).{0,24}(?:이벤트|event).{0,24}(?:대상|세그먼트|티어|target|segment|tier)/i },
-        { label: '장소', heading: /(?:캠페인|김페인|campaign).{0,24}(?:이벤트|event).{0,12}(?:장소|위치|location|venue)/i },
-        { label: '시행기간', heading: /(?:캠페인|김페인|campaign).{0,24}(?:이벤트|event).{0,24}(?:시행기간|진행기간|운영기간|기간|schedule|period)/i }
-    ];
-    const isFactHeading = line => markers.some(marker => marker.heading.test(line)) || /(?:캠페인|김페인|campaign).{0,24}(?:이벤트|event).{0,24}관련\s*세부\s*사항/i.test(line);
-    const valueAfter = marker => {
-        const index = lines.findIndex(line => marker.heading.test(line));
-        if (index < 0) return '';
-        const headingMatch = lines[index].match(marker.heading);
-        const inlineValue = headingMatch
-            ? lines[index].slice(headingMatch.index + headingMatch[0].length).replace(/^[\s:：&()[\]-]+/, '').trim()
-            : '';
-        if (inlineValue) return inlineValue;
-        for (let next = index + 1; next < lines.length; next++) {
-            if (isFactHeading(lines[next])) break;
-            if (/^(?:fact\s*sheet|문서\s*기록|버전\s*\d+)/i.test(lines[next])) continue;
-            return lines[next].replace(/^[-•*\s]+/, '').trim();
-        }
-        return '';
-    };
-
-    if (!markers.some(marker => marker.heading.test(lines.join(' ')))) return null;
-
-    const values = Object.fromEntries(markers.map(marker => [marker.label, valueAfter(marker)]));
-    const eventDates = promoDatesIn(values['시행기간']);
-    const details = [];
-    for (const label of ['목적', '대상', '장소']) {
-        if (values[label]) details.push({ label, value: values[label] });
-    }
-    if (values['시행기간']) details.push({ label: '시행기간', value: values['시행기간'] });
-
-    const detailStart = lines.findIndex(line => /(?:캠페인|김페인|campaign).{0,24}(?:이벤트|event).{0,24}관련\s*세부\s*사항/i.test(line));
-    if (detailStart >= 0) {
-        const detailLines = lines.slice(detailStart + 1);
-        const pointPeriod = lines.find(line => /(?:엑티비티|액티비티|activity\s*points?|포인트).*(?:적립|earn|accrual).*(?:기간|period)/i.test(line));
-        if (pointPeriod) details.push({ label: '포인트 적립 기간', value: pointPeriod.replace(/^[-•*\s]+/, '') });
-
-        const drawDetails = detailLines.filter(line => /추첨|주권|티켓|manual\s*draw|draw\s*(?:date|time)/i.test(line));
-        if (drawDetails.length) details.push({ label: '응모·추첨', value: drawDetails.map(line => line.replace(/^[-•*\s]+/, '')).join('\n') });
-
-        const confirmation = detailLines.find(line => /상금\s*확정|prize\s*confirmation|payout\s*(?:confirmation|time)/i.test(line));
-        if (confirmation) details.push({ label: '상금 확정', value: confirmation.replace(/^[-•*\s]+/, '') });
-
-        const krwHeader = detailLines.findIndex(line => /^\s*KRW\s*$/i.test(line));
-        const prizeStart = krwHeader >= 0 ? krwHeader : detailLines.findIndex(line => /(?:cash\s*mountain.*(?:상품|prize)|상품\s*(?:내역|목록|상금))/i.test(line));
-        if (prizeStart >= 0) {
-            const prizeLines = detailLines.slice(prizeStart).filter(line => /현금|상금|상품|가방|cash|prize|KRW|누적|억|만원|원|^\d+\s*(?:등|st|nd|rd|th)/i.test(line) && !/^\*/.test(line));
-            if (prizeLines.length) details.push({ label: '상품·상금', value: prizeLines.map(line => line.replace(/^[-•*\s]+/, '')).join('\n') });
-        }
-
-        const notes = detailLines.filter(line => /^\*/.test(line));
-        if (notes.length) details.push({ label: '유의사항', value: notes.map(line => line.replace(/^\*\s*/, '')).join('\n') });
-    }
-
-    return {
-        name: values['이벤트명'],
-        endDate: eventDates.at(-1) || '',
-        details,
-        description: details.map(detail => `${detail.label}: ${detail.value}`).join('\n\n')
-    };
-}
-
 function classifyPromoPdfText(text) {
     const lines = text.split(/\r?\n/).map(line => line.replace(/\s+/g, ' ').trim()).filter(Boolean);
-    const factSheetResult = classifyPromoFactSheet(lines);
-    if (factSheetResult) return factSheetResult;
-    const nameHeading = /(?:이벤트|행사|프로모션)\s*(?:명|제목|타이틀)|(?:event|promotion|campaign)\s*(?:name|title)/i;
-    const isHeading = line => promoPdfSections.some(section => section.heading.test(line)) || nameHeading.test(line);
-    const getSectionText = section => {
-        const index = lines.findIndex(line => section.heading.test(line));
+    const titleHeading = /(?:캠페인|김페인|campaign)\s*(?:&|＆|및|and)?\s*[:：]?\s*(?:이벤트|event)\s*(?:제목|타이틀|title)/i;
+    const detailsHeading = /(?:캠페인|김페인|campaign)\s*(?:&|＆|및|and)?\s*[:：]?\s*(?:이벤트|event)\s*관련\s*세부\s*사항/i;
+    const readHeadingValue = heading => {
+        const index = lines.findIndex(line => heading.test(line));
         if (index < 0) return '';
-        const firstLine = lines[index].replace(section.strip, '').trim();
-        const values = firstLine ? [firstLine] : [];
-        for (let lineIndex = index + 1; lineIndex < lines.length && values.length < 5; lineIndex++) {
-            if (isHeading(lines[lineIndex])) break;
-            values.push(lines[lineIndex]);
-        }
-        return values.join(' ').trim();
+        const match = lines[index].match(heading);
+        const inlineValue = match
+            ? lines[index].slice(match.index + match[0].length).replace(/^[\s:：&()[\]-]+/, '').trim()
+            : '';
+        return inlineValue || lines[index + 1] || '';
     };
+    const name = readHeadingValue(titleHeading);
+    const detailsIndex = lines.findIndex(line => detailsHeading.test(line));
+    const match = detailsIndex >= 0 ? lines[detailsIndex].match(detailsHeading) : null;
+    const inlineDetails = match
+        ? lines[detailsIndex].slice(match.index + match[0].length).replace(/^[\s:：&()[\]-]+/, '').trim()
+        : '';
+    const detailLines = detailsIndex >= 0
+        ? [inlineDetails, ...lines.slice(detailsIndex + 1)].filter(Boolean)
+        : [];
+    const description = detailLines.join('\n').trim();
+    const details = description
+        ? [{ label: '캠페인 & 이벤트 관련 세부사항', value: description }]
+        : [];
 
-    const nameLine = lines.find(line => nameHeading.test(line));
-    const nameMatch = nameLine?.match(/(?:(?:이벤트|행사|프로모션)\s*(?:명|제목|타이틀)|(?:event|promotion|campaign)\s*(?:name|title))\s*[:：-]\s*(.+)$/i);
-    const extractedName = nameMatch?.[1]?.trim() || '';
-    const fallbackName = lines.find(line => line.length <= 60 && !isHeading(line) && !promoDatesIn(line).length);
-    const dates = promoDatesIn(lines.join('\n'));
-    const endDateLine = lines.find(line => /종료|마감|까지|end|expires?|until|through|\bto\b/i.test(line) && promoDatesIn(line).length);
-    const startDateLine = lines.find(line => /시작|개시|부터|오픈|start|begin|from/i.test(line) && promoDatesIn(line).length);
-    const endDate = (endDateLine && promoDatesIn(endDateLine).at(-1)) || dates.at(-1) || '';
-    const startDate = (startDateLine && promoDatesIn(startDateLine)[0]) || (dates.length > 1 ? dates[0] : '');
-    const period = startDate && endDate && startDate !== endDate
-        ? `${startDate} ~ ${endDate}`
-        : dates.length > 1 ? `${dates[0]} ~ ${dates.at(-1)}` : getSectionText(promoPdfSections[0]);
-
-    const details = [];
-    if (period) details.push({ label: '기간', value: period });
-    for (const section of promoPdfSections.slice(1)) {
-        const value = getSectionText(section);
-        if (value) details.push({ label: section.label, value });
-    }
     return {
-        name: extractedName || fallbackName || '',
-        endDate,
+        name,
+        endDate: '',
         details,
-        description: details.map(detail => `${detail.label}: ${detail.value}`).join('\n\n')
+        description
     };
 }
 
 function showPromoPdfResults(result) {
     const panel = document.getElementById('promoPdfResults');
     panel.hidden = false;
-    if (!result.details.length) {
+    const entries = [
+        ...(result.name ? [{ label: '이벤트 제목', value: result.name }] : []),
+        ...result.details
+    ];
+    if (!entries.length) {
         panel.innerHTML = '<h4>분류 결과</h4><div class="promo-pdf-status">이벤트 세부 항목을 찾지 못했습니다. PDF의 텍스트를 확인하고 직접 입력해 주세요.</div>';
         return;
     }
-    panel.innerHTML = `<h4>자동 분류 결과</h4><dl>${result.details.map(detail => `<dt>${escapeHtml(detail.label)}</dt><dd>${escapeHtml(detail.value)}</dd>`).join('')}</dl>`;
+    panel.innerHTML = `<h4>자동 분류 결과</h4><dl>${entries.map(entry => `<dt>${escapeHtml(entry.label)}</dt><dd>${escapeHtml(entry.value)}</dd>`).join('')}</dl>`;
 }
 
 async function handlePromoPdfUpload(input) {
@@ -813,7 +718,6 @@ async function handlePromoPdfUpload(input) {
 
         const result = classifyPromoPdfText(extractedText);
         if (result.name) document.getElementById('promoName').value = result.name;
-        if (result.endDate) document.getElementById('promoEnd').value = result.endDate;
         if (result.description) document.getElementById('promoDesc').value = result.description;
         showPromoPdfResults(result);
         status.dataset.state = result.details.length ? 'success' : 'error';
@@ -834,10 +738,10 @@ function renderPromo() {
 
     // 통계 계산
     let total = promos.length;
-    let activeCount = promos.filter(p =>!p.completed && p.end >= today).length;
-    let doneCount = promos.filter(p => p.completed || p.end < today).length;
+    let activeCount = promos.filter(p => !p.completed && (!p.end || p.end >= today)).length;
+    let doneCount = promos.filter(p => p.completed || (p.end && p.end < today)).length;
     let expiringCount = promos.filter(p => {
-        if(p.completed) return false;
+        if(p.completed || !p.end) return false;
         const diffDays = Math.ceil((new Date(p.end) - new Date(today)) / (1000*60*60*24));
         return diffDays >= 0 && diffDays <= 7;
     }).length;
@@ -850,13 +754,13 @@ function renderPromo() {
     let list = promos.filter(p => {
         const matchQ = (p.name + ' ' + p.desc).toLowerCase().includes(q);
         if(!matchQ) return false;
-        if(promoFilter === 'ACTIVE') return!p.completed && p.end >= today;
+        if(promoFilter === 'ACTIVE') return !p.completed && (!p.end || p.end >= today);
         if(promoFilter === 'EXPIRING') {
-            if(p.completed) return false;
+            if(p.completed || !p.end) return false;
             const diff = Math.ceil((new Date(p.end) - new Date(today)) / (1000*60*60*24));
             return diff >= 0 && diff <= 7;
         }
-        if(promoFilter === 'COMPLETED') return p.completed || p.end < today;
+        if(promoFilter === 'COMPLETED') return p.completed || (p.end && p.end < today);
         return true;
     });
 
@@ -867,8 +771,8 @@ function renderPromo() {
     }
 
     list.forEach((p, i) => {
-        const diffDays = Math.ceil((new Date(p.end) - new Date(today)) / (1000*60*60*24));
-        const isExpired = (p.end < today &&!p.completed);
+        const diffDays = p.end ? Math.ceil((new Date(p.end) - new Date(today)) / (1000*60*60*24)) : null;
+        const isExpired = Boolean(p.end && p.end < today && !p.completed);
         const expiredClass = isExpired? 'promo-expired' : '';
         const completedClass = p.completed? 'completed-task' : '';
         const fileIcon = p.fileData? `<span onclick="openFile('${p.fileData}', '${p.fileName}')" class="file-link" title="${p.fileName}"></span>` : "";
@@ -877,6 +781,8 @@ function renderPromo() {
         let ddayBadge = '';
         if(p.completed) {
             ddayBadge = `<span class="badge badge-gray">완료</span>`;
+        } else if(!p.end) {
+            ddayBadge = `<span class="badge badge-gray">기간 미지정</span>`;
         } else if(diffDays < 0) {
             ddayBadge = `<span class="badge badge-danger">종료됨</span>`;
         } else if(diffDays === 0) {
@@ -896,7 +802,7 @@ function renderPromo() {
             <td class="${completedClass}"><b>${escapeHtml(p.name)}</b></td>
             <td class="${completedClass}" style="text-align:left; white-space:pre-wrap; line-height:1.4;">${escapeHtml(p.desc)} ${fileIcon}</td>
             <td>${ddayBadge}</td>
-            <td class="${completedClass}">${p.end}</td>
+            <td class="${completedClass}">${p.end || '-'}</td>
             <td>${statusBadge}</td>
             <td><button onclick="editPromo(${p.id})" class="btn-action" style="background:var(--edit-color);">편집</button></td>
             <td><button onclick="toggleCompletePromo(${p.id})" class="btn-action" style="background:${p.completed? '#636e72' : 'var(--success-color)'};">${p.completed?'취소':'완료'}</button></td>
@@ -912,7 +818,7 @@ async function handlePromo() {
     const end = document.getElementById('promoEnd').value;
     const fileInput = document.getElementById('promoFile');
     const editId = document.getElementById('promoEditId').value;
-    if(!name ||!desc ||!end) return alert("이벤트명, 상세 설명, 종료 날짜는 필수 입력입니다!");
+    if(!name || !desc) return alert("이벤트 제목과 관련 세부사항을 입력해 주세요.");
 
     let fileData = null, fileName = "";
     if (fileInput.files.length > 0) {
